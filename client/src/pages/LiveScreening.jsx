@@ -1,22 +1,72 @@
-﻿// src/pages/LiveScreening.jsx
-// 100% Cross-Browser Voice Screener (Chrome, Edge, Safari, Firefox, iOS, Android)
-// Dual Engine: Web Speech API (Chrome/Edge) + Universal Web Audio VAD + MediaRecorder (Safari/Firefox/All Browsers)
+// src/pages/LiveScreening.jsx
+// 100% Cross-Browser & Mobile-Responsive Voice Screener
+// Dual Engine: Web Speech API (Chrome/Edge) + Universal Web Audio VAD + MediaRecorder (Safari/Firefox/iOS/Android)
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import VoiceOrb from '../components/VoiceOrb';
 import TranscriptPanel from '../components/TranscriptPanel';
+import ReportView from '../components/ReportView';
 import { useWebSocket } from '../hooks/useWebSocket';
+
+const SUPPORTED_LANGUAGES = [
+  { code: 'auto', label: '🌐 Auto-Detect', langName: 'Auto-Detect (All Languages)' },
+  { code: 'en-US', label: 'English', langName: 'English' },
+  { code: 'hi-IN', label: 'Hindi (हिन्दी)', langName: 'Hindi' },
+  { code: 'mr-IN', label: 'Marathi (मराठी)', langName: 'Marathi' },
+  { code: 'bn-IN', label: 'Bengali (বাংলা)', langName: 'Bengali' },
+  { code: 'ta-IN', label: 'Tamil (தமிழ்)', langName: 'Tamil' },
+  { code: 'te-IN', label: 'Telugu (తెలుగు)', langName: 'Telugu' },
+  { code: 'gu-IN', label: 'Gujarati (ગુજરાતી)', langName: 'Gujarati' },
+  { code: 'kn-IN', label: 'Kannada (ಕನ್ನಡ)', langName: 'Kannada' },
+  { code: 'ml-IN', label: 'Malayalam (മലയാളം)', langName: 'Malayalam' },
+  { code: 'pa-IN', label: 'Punjabi (ਪੰਜਾਬੀ)', langName: 'Punjabi' },
+  { code: 'ur-IN', label: 'Urdu (اردو)', langName: 'Urdu' },
+  { code: 'es-ES', label: 'Spanish (Español)', langName: 'Spanish' },
+  { code: 'fr-FR', label: 'French (Français)', langName: 'French' },
+  { code: 'de-DE', label: 'German (Deutsch)', langName: 'German' },
+  { code: 'ar-SA', label: 'Arabic (العربية)', langName: 'Arabic' },
+  { code: 'zh-CN', label: 'Chinese (中文)', langName: 'Chinese' },
+  { code: 'ja-JP', label: 'Japanese (日本語)', langName: 'Japanese' },
+  { code: 'ru-RU', label: 'Russian (Русский)', langName: 'Russian' },
+  { code: 'pt-BR', label: 'Portuguese (Português)', langName: 'Portuguese' },
+];
+
+function detectScriptLanguage(text) {
+  if (!text) return null;
+  if (/[\u0980-\u09FF]/.test(text)) return 'bn-IN'; // Bengali
+  if (/[\u0B80-\u0BFF]/.test(text)) return 'ta-IN'; // Tamil
+  if (/[\u0C00-\u0C7F]/.test(text)) return 'te-IN'; // Telugu
+  if (/[\u0A80-\u0AFF]/.test(text)) return 'gu-IN'; // Gujarati
+  if (/[\u0C80-\u0CFF]/.test(text)) return 'kn-IN'; // Kannada
+  if (/[\u0D00-\u0D7F]/.test(text)) return 'ml-IN'; // Malayalam
+  if (/[\u0A00-\u0A7F]/.test(text)) return 'pa-IN'; // Punjabi
+  if (/[\u0600-\u06FF]/.test(text)) return 'ur-IN'; // Urdu / Arabic
+  if (/[\u0900-\u097F]/.test(text)) {
+    if (/\b(आहे|नाही|मला|काय|कसे|दुखत|झाले|झाला|आहोत|होते|करा|येत|सांगा|घ्या)\b/.test(text)) {
+      return 'mr-IN'; // Marathi
+    }
+    return 'hi-IN'; // Hindi
+  }
+  if (/[áéíóúñ¿¡]/i.test(text)) return 'es-ES'; // Spanish
+  if (/[àâçéèêëîïôûùüÿœæ]/i.test(text)) return 'fr-FR'; // French
+  if (/[äöüß]/i.test(text)) return 'de-DE'; // German
+  if (/[ãõâêîôû]/i.test(text)) return 'pt-BR'; // Portuguese
+  if (/[\u4e00-\u9fa5]/.test(text)) return 'zh-CN'; // Chinese
+  if (/[\u3040-\u30ff]/.test(text)) return 'ja-JP'; // Japanese
+  if (/[\u0400-\u04FF]/.test(text)) return 'ru-RU'; // Russian
+  return null;
+}
 
 const STATUS_LABELS = {
   idle: 'Ready to start',
   connecting: 'Connecting...',
   greeting: 'AI is speaking...',
-  listening: 'Listening... (Speak naturally)',
+  listening: 'Listening to you... (Speak naturally)',
   recording: 'Hearing you...',
   processing: 'Processing response...',
   thinking: 'AI is thinking...',
   speaking: 'AI is speaking...',
-  ended: 'Call ended',
+  ended: 'Call completed',
 };
 
 export default function LiveScreening() {
@@ -27,7 +77,12 @@ export default function LiveScreening() {
   const [callDuration, setCallDuration] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
   const [isMuted, setIsMuted] = useState(false);
-  const [activeLang, setActiveLang] = useState('en-US');
+  const [activeLang, setActiveLang] = useState('auto');
+  const [mobileTab, setMobileTab] = useState('call'); // 'call' | 'transcript'
+
+  // Report state
+  const [reportData, setReportData] = useState(null);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
 
   // Conversation turns
   const [messages, setMessages] = useState([]);
@@ -48,8 +103,11 @@ export default function LiveScreening() {
   const isSpeakingAIRef = useRef(false);
   const callActiveRef = useRef(false);
   const isMutedRef = useRef(false);
-  const activeLangRef = useRef('en-US');
+  const activeLangRef = useRef('auto');
   activeLangRef.current = activeLang;
+  const detectedLangRef = useRef('en-US');
+  const shouldEndCallRef = useRef(false);
+  const hasSentTextTurnRef = useRef(false);
 
   // Universal MediaRecorder & Web Audio VAD refs (Safari / Firefox / Mobile)
   const mediaStreamRef = useRef(null);
@@ -74,18 +132,21 @@ export default function LiveScreening() {
   const hasSpeechRecognition = typeof window !== 'undefined' &&
     ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
 
-  // WebSocket hook declaration (sendJSON is defined here)
+  // WebSocket hook declaration
   const wsHandlers = {
     onConnected: ({ sessionId }) => {
       setSessionId(sessionId);
     },
-    onCallStarted: () => {
+    onCallStarted: ({ isResume } = {}) => {
       setCallActive(true);
       callActiveRef.current = true;
       setCallStatus('greeting');
       audioQueueRef.current = [];
       isPlayingAudioRef.current = false;
-      startTimeRef.current = Date.now();
+      shouldEndCallRef.current = false;
+      if (timerRef.current) clearInterval(timerRef.current);
+      const baseDuration = isResume ? callDuration : 0;
+      startTimeRef.current = Date.now() - baseDuration * 1000;
       timerRef.current = setInterval(() => {
         setCallDuration(Math.floor((Date.now() - startTimeRef.current) / 1000));
       }, 1000);
@@ -109,7 +170,10 @@ export default function LiveScreening() {
         return [...prev, { role: 'user', text, timestamp: Date.now() }];
       });
     },
-    onAiText: ({ text, useBrowserTTS }) => {
+    onAiText: ({ text, isCompleted, useBrowserTTS }) => {
+      if (isCompleted) {
+        shouldEndCallRef.current = true;
+      }
       setIsTyping(false);
       setMessages((prev) => {
         if (prev.length > 0 && prev[prev.length - 1].role === 'ai' && prev[prev.length - 1].text === text) {
@@ -121,7 +185,10 @@ export default function LiveScreening() {
         speakWithBrowserTTS(text);
       }
     },
-    onAudio: (audioBuffer) => {
+    onAudio: (audioBuffer, header) => {
+      if (header?.isCompleted) {
+        shouldEndCallRef.current = true;
+      }
       audioQueueRef.current.push(audioBuffer);
       playNextAudio();
     },
@@ -129,7 +196,12 @@ export default function LiveScreening() {
       setCallStatus('ended');
       setCallActive(false);
       callActiveRef.current = false;
-      clearInterval(timerRef.current);
+      setIsGeneratingReport(true);
+      if (timerRef.current) clearInterval(timerRef.current);
+    },
+    onReportReady: ({ report }) => {
+      setIsGeneratingReport(false);
+      setReportData(report);
     },
     onError: ({ message, recoverable }) => {
       showError(message || 'An error occurred');
@@ -152,6 +224,7 @@ export default function LiveScreening() {
     const text = (textToSend || currentTextRef.current || interimUserText).trim();
     if (!text || text.length < 2) return;
 
+    hasSentTextTurnRef.current = true;
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     currentTextRef.current = '';
     setInterimUserText('');
@@ -162,7 +235,7 @@ export default function LiveScreening() {
     sendJSON({ type: 'user_message', text });
   }, [interimUserText, sendJSON]);
 
-  // Universal VAD (Voice Activity Detection) loop for Safari & Firefox
+  // Universal VAD (Voice Activity Detection) loop for Safari, Firefox, iOS, Android
   const startUniversalVAD = useCallback((stream) => {
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -200,6 +273,9 @@ export default function LiveScreening() {
       recorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0 && !isSpeakingAIRef.current) {
           e.data.arrayBuffer().then((buf) => {
+            if (hasSentTextTurnRef.current) {
+              return;
+            }
             const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
             sendJSON({ type: 'audio_chunk', data: b64 });
           });
@@ -226,6 +302,7 @@ export default function LiveScreening() {
         if (average > 18) {
           if (!vadSpeakingRef.current) {
             vadSpeakingRef.current = true;
+            hasSentTextTurnRef.current = false;
             setCallStatus('recording');
             sendJSON({ type: 'audio_start' });
           }
@@ -238,8 +315,10 @@ export default function LiveScreening() {
               // 1.1s of silence detected -> send audio to server for Whisper STT
               vadSpeakingRef.current = false;
               vadSilenceStartRef.current = null;
-              setCallStatus('processing');
-              sendJSON({ type: 'audio_end' });
+              if (!hasSentTextTurnRef.current) {
+                setCallStatus('processing');
+                sendJSON({ type: 'audio_end' });
+              }
             }
           }
         }
@@ -273,7 +352,12 @@ export default function LiveScreening() {
         const recognition = new SpeechRecognition();
         recognition.continuous = true;
         recognition.interimResults = true;
-        recognition.lang = activeLangRef.current || 'en-US';
+        recognition.maxAlternatives = 1;
+
+        const targetLang = (activeLangRef.current === 'auto' || !activeLangRef.current)
+          ? (detectedLangRef.current || 'en-US')
+          : activeLangRef.current;
+        recognition.lang = targetLang;
 
         currentTextRef.current = '';
         setInterimUserText('');
@@ -287,26 +371,40 @@ export default function LiveScreening() {
         recognition.onresult = (event) => {
           if (isSpeakingAIRef.current || isMutedRef.current || !callActiveRef.current) return;
 
-          let fullTranscript = '';
-          for (let i = 0; i < event.results.length; ++i) {
-            fullTranscript += event.results[i][0].transcript;
+          let interimTranscript = '';
+          let finalTranscript = '';
+
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            const chunk = event.results[i][0]?.transcript || '';
+            if (event.results[i].isFinal) {
+              finalTranscript += chunk + ' ';
+            } else {
+              interimTranscript += chunk;
+            }
           }
 
-          const text = fullTranscript.trim();
-          if (text) {
-            currentTextRef.current = text;
-            setInterimUserText(text);
+          const fullUtterance = (finalTranscript + interimTranscript).trim();
+          if (fullUtterance) {
+            currentTextRef.current = fullUtterance;
+            setInterimUserText(fullUtterance);
             setCallStatus('recording');
 
-            if (/[\u0900-\u097F]/.test(text) && activeLangRef.current !== 'hi-IN') {
-              setActiveLang('hi-IN');
-              activeLangRef.current = 'hi-IN';
+            // Dynamically detect script and update target language
+            const detected = detectScriptLanguage(fullUtterance);
+            if (detected) {
+              detectedLangRef.current = detected;
+              if (activeLangRef.current === 'auto' && recognitionRef.current && recognitionRef.current.lang !== detected) {
+                try {
+                  recognitionRef.current.lang = detected;
+                } catch (_) {}
+              }
             }
 
+            // Silence detector: 1.1s of silence -> fast auto submit to AI
             if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
             silenceTimerRef.current = setTimeout(() => {
-              handleAutoSubmit(text);
-            }, 1000);
+              handleAutoSubmit(fullUtterance);
+            }, 1100);
           }
         };
 
@@ -336,7 +434,7 @@ export default function LiveScreening() {
 
     // ENGINE 2: Universal Safari, Firefox, Mobile VAD & MediaRecorder
     try {
-      if (!mediaStreamRef.current || mediaStreamRef.current.getTracks().every(t => t.readyState === 'ended')) {
+      if (!mediaStreamRef.current || mediaStreamRef.current.getTracks().every((t) => t.readyState === 'ended')) {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         mediaStreamRef.current = stream;
       }
@@ -393,6 +491,13 @@ export default function LiveScreening() {
         isSpeakingAIRef.current = false;
         setIsTyping(false);
         if (callActiveRef.current) {
+          if (shouldEndCallRef.current) {
+            shouldEndCallRef.current = false;
+            setTimeout(() => {
+              handleEndCall();
+            }, 800);
+            return;
+          }
           setCallStatus('listening');
           setTimeout(() => {
             if (callActiveRef.current && !isSpeakingAIRef.current) {
@@ -433,18 +538,13 @@ export default function LiveScreening() {
     utterance.pitch = 1.0;
 
     const voices = window.speechSynthesis.getVoices();
-    const hasHindi = /[\u0900-\u097F]/.test(text);
+    const detectedLang = detectScriptLanguage(text) || (activeLangRef.current !== 'auto' ? activeLangRef.current : 'en-US');
+    const langPrefix = detectedLang.split('-')[0];
+    utterance.lang = detectedLang;
 
-    let matchingVoice = null;
-    if (hasHindi) {
-      utterance.lang = 'hi-IN';
-      matchingVoice = voices.find(v => (v.lang && v.lang.startsWith('hi')) || v.name.toLowerCase().includes('hindi')) ||
-                      voices.find(v => v.lang && (v.lang === 'en-IN' || v.lang === 'hi_IN'));
-    } else {
-      utterance.lang = 'en-US';
-      matchingVoice = voices.find(v => (v.name.includes('Google') || v.name.includes('Natural') || v.lang.startsWith('en')) && !v.name.includes('eSpeak'));
-    }
-
+    let matchingVoice = voices.find(v => v.lang && (v.lang === detectedLang || v.lang.replace('_', '-').startsWith(detectedLang))) ||
+                        voices.find(v => v.lang && (v.lang.startsWith(langPrefix) || v.lang.replace('_', '-').startsWith(langPrefix))) ||
+                        voices.find(v => v.name.toLowerCase().includes(langPrefix));
     if (matchingVoice) utterance.voice = matchingVoice;
     currentUtteranceRef.current = utterance;
 
@@ -455,6 +555,13 @@ export default function LiveScreening() {
       setIsTyping(false);
 
       if (callActiveRef.current) {
+        if (shouldEndCallRef.current) {
+          shouldEndCallRef.current = false;
+          setTimeout(() => {
+            handleEndCall();
+          }, 800);
+          return;
+        }
         setCallStatus('listening');
         setTimeout(() => {
           if (callActiveRef.current && !isSpeakingAIRef.current) {
@@ -480,10 +587,14 @@ export default function LiveScreening() {
     window.speechSynthesis.speak(utterance);
   }, [startListening, stopListening]);
 
-  // Start Call (Works in 100% of browsers)
+  // Start Call
   const handleStartCall = async () => {
     setCallStatus('connecting');
     setMessages([]);
+    setReportData(null);
+    setIsGeneratingReport(false);
+    shouldEndCallRef.current = false;
+    hasSentTextTurnRef.current = false;
     setInterimUserText('');
     setCallDuration(0);
     isSpeakingAIRef.current = false;
@@ -494,7 +605,7 @@ export default function LiveScreening() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
     } catch (e) {
-      showError('Microphone permission is required for voice calling. Please allow mic access in browser settings.');
+      showError('Microphone permission is required for voice calling.');
       setCallStatus('idle');
       return;
     }
@@ -506,6 +617,7 @@ export default function LiveScreening() {
   const handleEndCall = () => {
     callActiveRef.current = false;
     isSpeakingAIRef.current = false;
+    shouldEndCallRef.current = false;
     if (ttsWatchdogRef.current) clearTimeout(ttsWatchdogRef.current);
     stopListening();
 
@@ -516,28 +628,56 @@ export default function LiveScreening() {
     if (typeof window !== 'undefined' && window.speechSynthesis) {
       window.speechSynthesis.cancel();
     }
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(t => t.stop());
-      mediaStreamRef.current = null;
-    }
 
+    setIsGeneratingReport(true);
     sendJSON({ type: 'end_call' });
     setCallStatus('ended');
     setCallActive(false);
-    clearInterval(timerRef.current);
+    if (timerRef.current) clearInterval(timerRef.current);
     setIsTyping(false);
   };
 
-  // Restart Call
-  const handleRestartCall = () => {
-    handleStartCall();
+  // Restart Call (Continue with previous chat history)
+  const handleRestartCall = async () => {
+    setCallStatus('connecting');
+    setReportData(null);
+    setIsGeneratingReport(false);
+    shouldEndCallRef.current = false;
+    hasSentTextTurnRef.current = false;
+    setInterimUserText('');
+    isSpeakingAIRef.current = false;
+    audioQueueRef.current = [];
+    isPlayingAudioRef.current = false;
+
+    try {
+      if (!mediaStreamRef.current || mediaStreamRef.current.getTracks().every(t => t.readyState === 'ended')) {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaStreamRef.current = stream;
+      }
+    } catch (e) {
+      showError('Microphone permission is required for voice calling.');
+      setCallStatus('ended');
+      return;
+    }
+
+    sendJSON({
+      type: 'restart_call',
+      history: messages.map((m) => ({
+        role: m.role === 'ai' ? 'assistant' : 'user',
+        content: m.text,
+      })),
+    });
   };
 
-  // Next Call
+  // Next Call (Fresh new session)
   const handleNextCall = () => {
     setCallStatus('idle');
     setCallActive(false);
     callActiveRef.current = false;
+    setReportData(null);
+    setIsGeneratingReport(false);
+    shouldEndCallRef.current = false;
+    hasSentTextTurnRef.current = false;
     setMessages([]);
     setInterimUserText('');
     setCallDuration(0);
@@ -549,6 +689,12 @@ export default function LiveScreening() {
     setIsMuted(nextMuted);
     isMutedRef.current = nextMuted;
 
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getAudioTracks().forEach((track) => {
+        track.enabled = !nextMuted;
+      });
+    }
+
     if (nextMuted) {
       stopListening();
     } else {
@@ -558,15 +704,11 @@ export default function LiveScreening() {
     }
   };
 
-  // Manual Submit button
+  // Manual Submit
   const handleManualSpeakClick = () => {
     if (!callActive) return;
     if (callStatus === 'recording') {
-      if (hasSpeechRecognition) {
-        handleAutoSubmit(currentTextRef.current || interimUserText);
-      } else {
-        sendJSON({ type: 'audio_end' });
-      }
+      handleAutoSubmit(currentTextRef.current || interimUserText);
     } else if (callStatus === 'listening') {
       startListening();
     }
@@ -576,6 +718,7 @@ export default function LiveScreening() {
   const handleSelectLang = (langCode) => {
     setActiveLang(langCode);
     activeLangRef.current = langCode;
+    detectedLangRef.current = langCode === 'auto' ? 'en-US' : langCode;
     if (callActive && !isSpeakingAIRef.current) {
       startListening();
     }
@@ -594,7 +737,7 @@ export default function LiveScreening() {
         window.speechSynthesis.cancel();
       }
       if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach(t => t.stop());
+        mediaStreamRef.current.getTracks().forEach((t) => t.stop());
       }
       clearInterval(timerRef.current);
       disconnect();
@@ -615,292 +758,323 @@ export default function LiveScreening() {
     : 'idle';
 
   return (
-    <div className="screening-layout" style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden' }}>
+    <div className="screening-layout">
       
-      {/* 1. LEFT SIDE: Adaptive Live Transcript Panel */}
-      <TranscriptPanel messages={messages} isTyping={isTyping} />
+      {/* Mobile Top Tab Bar (< 900px screens) */}
+      <div className="mobile-view-tabs">
+        <button
+          className={`mobile-tab-btn ${mobileTab === 'call' ? 'active' : ''}`}
+          onClick={() => setMobileTab('call')}
+        >
+          <span className="material-symbols-outlined" style={{ fontSize: 18 }}>call</span>
+          <span>Voice Screening</span>
+        </button>
 
-      {/* 2. RIGHT / CENTER: Voice Visualizer Canvas */}
-      <div className="screening-center" style={{
-        flex: 1,
-        height: '100vh',
-        overflowY: 'auto',
-        padding: '36px 32px',
+        <button
+          className={`mobile-tab-btn ${mobileTab === 'transcript' ? 'active' : ''}`}
+          onClick={() => setMobileTab('transcript')}
+        >
+          <span className="material-symbols-outlined" style={{ fontSize: 18 }}>forum</span>
+          <span>Transcript</span>
+          {messages.length > 0 && (
+            <span className="tab-badge">{messages.length}</span>
+          )}
+        </button>
+      </div>
+
+      {/* 1. LEFT SIDE: Adaptive Live Transcript Panel */}
+      <div className={`transcript-panel ${mobileTab === 'call' ? 'mobile-hidden' : ''}`} style={{
+        width: 380,
+        flexShrink: 0,
         display: 'flex',
         flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
+        height: '100%',
         position: 'relative'
       }}>
+        <TranscriptPanel messages={messages} isTyping={isTyping} />
+      </div>
+
+      {/* 2. RIGHT / CENTER: Voice Visualizer Canvas or Clinical Report */}
+      <div className={`screening-center ${mobileTab === 'transcript' ? 'mobile-hidden' : ''}`}>
         
-        {/* Top Bar: Status Pill + Language Mode Switcher (English / Hindi) */}
-        <div style={{
-          position: 'absolute',
-          top: 24,
-          left: 32,
-          right: 32,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          zIndex: 10
-        }}>
-          {/* Status Pill */}
-          <div className="status-pill" style={{ position: 'static' }}>
-            <div className={`status-dot ${dotClass}`} />
-            <span className="status-label">{statusLabel}</span>
-          </div>
+        {/* If call is ended or generating report, render the Structured Health Report */}
+        {callStatus === 'ended' || isGeneratingReport || reportData ? (
+          <ReportView
+            report={reportData}
+            messages={messages}
+            duration={callDuration}
+            isLoading={isGeneratingReport}
+            onRestartCall={handleRestartCall}
+            onNextCall={handleNextCall}
+          />
+        ) : (
+          <>
+            {/* Top Bar: Status Pill + Multilingual Switcher */}
+            <div className="screening-top-bar">
+              {/* Status Pill */}
+              <div className="status-pill" style={{ position: 'static', margin: 0 }}>
+                <div className={`status-dot ${dotClass}`} />
+                <span className="status-label">{statusLabel}</span>
+              </div>
 
-          {/* Language Mode Toggle: English / Hindi */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            background: 'var(--color-surface)',
-            padding: '4px',
-            borderRadius: '14px',
-            border: '1px solid var(--color-outline-variant)',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
-            gap: 4
-          }}>
-            <button
-              id="lang-english-btn"
-              onClick={() => handleSelectLang('en-US')}
-              style={{
-                padding: '6px 14px',
-                borderRadius: '10px',
-                border: 'none',
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: 'pointer',
-                transition: 'all 0.2s ease',
-                background: activeLang === 'en-US' ? 'var(--color-primary)' : 'transparent',
-                color: activeLang === 'en-US' ? '#ffffff' : 'var(--color-on-surface-variant)',
-                boxShadow: activeLang === 'en-US' ? '0 2px 6px rgba(0,82,204,0.3)' : 'none'
-              }}
-            >
-              English
-            </button>
-            <button
-              id="lang-hindi-btn"
-              onClick={() => handleSelectLang('hi-IN')}
-              style={{
-                padding: '6px 14px',
-                borderRadius: '10px',
-                border: 'none',
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: 'pointer',
-                transition: 'all 0.2s ease',
-                background: activeLang === 'hi-IN' ? 'var(--color-primary)' : 'transparent',
-                color: activeLang === 'hi-IN' ? '#ffffff' : 'var(--color-on-surface-variant)',
-                boxShadow: activeLang === 'hi-IN' ? '0 2px 6px rgba(0,82,204,0.3)' : 'none'
-              }}
-            >
-              Hindi (हिन्दी)
-            </button>
-          </div>
-        </div>
-
-        {/* Voice Orb Visualizer */}
-        <VoiceOrb status={callStatus} />
-
-        {/* Live Speaking Subtitle */}
-        {interimUserText && (
-          <div style={{
-            background: 'var(--color-surface-container)',
-            border: '1.5px solid var(--color-primary-container)',
-            borderRadius: '24px',
-            padding: '12px 24px',
-            marginBottom: 16,
-            fontSize: 15,
-            color: 'var(--color-on-surface)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            boxShadow: '0 4px 16px rgba(0,82,204,0.1)',
-            animation: 'fade-in-up 0.2s ease',
-            maxWidth: 540,
-            textAlign: 'center'
-          }}>
-            <span className="material-symbols-outlined filled" style={{ fontSize: 20, color: 'var(--color-primary)' }}>mic</span>
-            <span>"{interimUserText}"</span>
-          </div>
-        )}
-
-        {/* Universal Voice Banner */}
-        {callActive && (
-          <div style={{
-            fontSize: 13,
-            color: 'var(--color-on-surface-variant)',
-            marginBottom: 16,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6
-          }}>
-            <span className="material-symbols-outlined" style={{ fontSize: 16, color: '#1a7a4a' }}>record_voice_over</span>
-            <span>
-              <strong>Universal Voice Active:</strong> {activeLang === 'hi-IN' ? 'Hindi (हिन्दी)' : 'English'} mode. Speak naturally into your microphone.
-            </span>
-          </div>
-        )}
-
-        {/* Call Action Controls */}
-        <div className="call-controls" style={{ marginTop: 8 }}>
-          {callStatus === 'idle' && (
-            <button
-              id="start-call-btn"
-              className="btn-start-call"
-              onClick={handleStartCall}
-              style={{ padding: '16px 44px', fontSize: 16 }}
-            >
-              <span className="material-symbols-outlined filled" style={{ fontSize: 22 }}>call</span>
-              Start Voice Call
-            </button>
-          )}
-
-          {callStatus === 'connecting' && (
-            <button className="btn-start-call" disabled style={{ padding: '16px 44px', fontSize: 16 }}>
-              <span className="material-symbols-outlined spin" style={{ fontSize: 22 }}>sync</span>
-              Connecting...
-            </button>
-          )}
-
-          {callActive && (
-            <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
-              {callStatus === 'recording' && (
+              {/* Language Mode Toggle & Dropdown */}
+              <div className="lang-switcher-container" style={{
+                display: 'flex',
+                alignItems: 'center',
+                background: 'var(--color-surface)',
+                padding: '4px',
+                borderRadius: '14px',
+                border: '1px solid var(--color-outline-variant)',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+                gap: 4,
+                maxWidth: '100%'
+              }}>
                 <button
-                  onClick={handleManualSpeakClick}
-                  className="btn-outline"
+                  id="lang-auto-btn"
+                  onClick={() => handleSelectLang('auto')}
                   style={{
-                    padding: '14px 20px',
-                    borderRadius: 'var(--radius)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    fontSize: 14,
+                    padding: '6px 10px',
+                    borderRadius: '10px',
+                    border: 'none',
+                    fontSize: 12,
                     fontWeight: 600,
-                    borderColor: 'var(--color-primary-container)',
-                    color: 'var(--color-primary-container)'
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    background: activeLang === 'auto' ? 'var(--color-primary)' : 'transparent',
+                    color: activeLang === 'auto' ? '#ffffff' : 'var(--color-on-surface-variant)',
+                    boxShadow: activeLang === 'auto' ? '0 2px 6px rgba(0,82,204,0.3)' : 'none',
+                    whiteSpace: 'nowrap'
                   }}
                 >
-                  <span className="material-symbols-outlined" style={{ fontSize: 18 }}>send</span>
-                  Send Speech Now
+                  🌐 Auto
+                </button>
+
+                <button
+                  id="lang-english-btn"
+                  onClick={() => handleSelectLang('en-US')}
+                  style={{
+                    padding: '6px 10px',
+                    borderRadius: '10px',
+                    border: 'none',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    background: activeLang === 'en-US' ? 'var(--color-primary)' : 'transparent',
+                    color: activeLang === 'en-US' ? '#ffffff' : 'var(--color-on-surface-variant)',
+                    boxShadow: activeLang === 'en-US' ? '0 2px 6px rgba(0,82,204,0.3)' : 'none',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  English
+                </button>
+
+                <button
+                  id="lang-hindi-btn"
+                  onClick={() => handleSelectLang('hi-IN')}
+                  style={{
+                    padding: '6px 10px',
+                    borderRadius: '10px',
+                    border: 'none',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    background: activeLang === 'hi-IN' ? 'var(--color-primary)' : 'transparent',
+                    color: activeLang === 'hi-IN' ? '#ffffff' : 'var(--color-on-surface-variant)',
+                    boxShadow: activeLang === 'hi-IN' ? '0 2px 6px rgba(0,82,204,0.3)' : 'none',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  हिन्दी
+                </button>
+
+                {/* More Languages Dropdown */}
+                <select
+                  aria-label="Select Other Language"
+                  value={['auto', 'en-US', 'hi-IN'].includes(activeLang) ? '' : activeLang}
+                  onChange={(e) => {
+                    if (e.target.value) handleSelectLang(e.target.value);
+                  }}
+                  style={{
+                    padding: '5px 8px',
+                    borderRadius: '10px',
+                    border: '1px solid var(--color-outline-variant)',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    background: !['auto', 'en-US', 'hi-IN'].includes(activeLang) ? 'var(--color-primary-fixed)' : 'transparent',
+                    color: !['auto', 'en-US', 'hi-IN'].includes(activeLang) ? 'var(--color-primary)' : 'var(--color-on-surface-variant)',
+                    outline: 'none',
+                    maxWidth: 130
+                  }}
+                >
+                  <option value="">More (18+)...</option>
+                  {SUPPORTED_LANGUAGES.filter((l) => !['auto', 'en-US', 'hi-IN'].includes(l.code)).map((lang) => (
+                    <option key={lang.code} value={lang.code}>
+                      {lang.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Voice Orb Visualizer */}
+            <div className="voice-orb-wrapper" style={{ margin: 'auto 0' }}>
+              <VoiceOrb status={callStatus} />
+            </div>
+
+            {/* Live Speaking Subtitle */}
+            {interimUserText && (
+              <div style={{
+                background: 'var(--color-surface-container)',
+                border: '1.5px solid var(--color-primary-container)',
+                borderRadius: '24px',
+                padding: '10px 20px',
+                marginBottom: 14,
+                fontSize: 14,
+                color: 'var(--color-on-surface)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                boxShadow: '0 4px 16px rgba(0,82,204,0.1)',
+                animation: 'fade-in-up 0.2s ease',
+                maxWidth: '92%',
+                textAlign: 'center'
+              }}>
+                <span className="material-symbols-outlined filled" style={{ fontSize: 18, color: 'var(--color-primary)' }}>mic</span>
+                <span>"{interimUserText}"</span>
+              </div>
+            )}
+
+            {/* Universal Voice Banner */}
+            {callActive && (
+              <div style={{
+                fontSize: 12.5,
+                color: 'var(--color-on-surface-variant)',
+                marginBottom: 14,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                textAlign: 'center'
+              }}>
+                <span className="material-symbols-outlined" style={{ fontSize: 16, color: '#1a7a4a' }}>record_voice_over</span>
+                <span>
+                  <strong>Language:</strong> {SUPPORTED_LANGUAGES.find((l) => l.code === activeLang)?.label || 'Multilingual'} active. Speak naturally.
+                </span>
+              </div>
+            )}
+
+            {/* Call Action Controls */}
+            <div className="call-controls">
+              {callStatus === 'idle' && (
+                <button
+                  id="start-call-btn"
+                  className="btn-start-call"
+                  onClick={handleStartCall}
+                  style={{ padding: '16px 36px', fontSize: 15 }}
+                >
+                  <span className="material-symbols-outlined filled" style={{ fontSize: 22 }}>call</span>
+                  Start Voice Screening
                 </button>
               )}
 
-              {/* Mute Toggle */}
-              <button
-                onClick={handleToggleMute}
-                className="btn-outline"
-                style={{
-                  padding: '14px 20px',
-                  borderRadius: 'var(--radius)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  fontSize: 14,
-                  fontWeight: 600,
-                  background: isMuted ? 'var(--color-error-container)' : 'var(--color-surface)',
-                  color: isMuted ? 'var(--color-error)' : 'var(--color-on-surface)',
-                  borderColor: isMuted ? 'var(--color-error)' : 'var(--color-outline-variant)'
-                }}
-              >
-                <span className="material-symbols-outlined" style={{ fontSize: 20 }}>
-                  {isMuted ? 'mic_off' : 'mic'}
-                </span>
-                {isMuted ? 'Unmute' : 'Mute'}
-              </button>
+              {callStatus === 'connecting' && (
+                <button className="btn-start-call" disabled style={{ padding: '16px 36px', fontSize: 15 }}>
+                  <span className="material-symbols-outlined spin" style={{ fontSize: 22 }}>sync</span>
+                  Connecting Call...
+                </button>
+              )}
 
-              {/* End Call Button */}
-              <button
-                id="end-call-btn"
-                className="btn-end-call"
-                onClick={handleEndCall}
-                style={{ padding: '14px 32px', fontSize: 15 }}
-              >
-                <span className="material-symbols-outlined filled" style={{ fontSize: 22 }}>call_end</span>
-                End Call
-              </button>
+              {callActive && (
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', width: '100%', justifyContent: 'center' }}>
+                  {callStatus === 'recording' && (
+                    <button
+                      onClick={handleManualSpeakClick}
+                      className="btn-outline"
+                      style={{
+                        padding: '12px 18px',
+                        borderRadius: 'var(--radius)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        fontSize: 13.5,
+                        fontWeight: 600,
+                        borderColor: 'var(--color-primary-container)',
+                        color: 'var(--color-primary-container)'
+                      }}
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: 18 }}>send</span>
+                      Send Speech Now
+                    </button>
+                  )}
+
+                  {/* Mute Toggle */}
+                  <button
+                    onClick={handleToggleMute}
+                    className="btn-outline"
+                    style={{
+                      padding: '12px 18px',
+                      borderRadius: 'var(--radius)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      fontSize: 13.5,
+                      fontWeight: 600,
+                      background: isMuted ? 'var(--color-error-container)' : 'var(--color-surface)',
+                      color: isMuted ? 'var(--color-error)' : 'var(--color-on-surface)',
+                      borderColor: isMuted ? 'var(--color-error)' : 'var(--color-outline-variant)'
+                    }}
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: 18 }}>
+                      {isMuted ? 'mic_off' : 'mic'}
+                    </span>
+                    {isMuted ? 'Unmute' : 'Mute'}
+                  </button>
+
+                  {/* End Call Button */}
+                  <button
+                    id="end-call-btn"
+                    className="btn-end-call"
+                    onClick={handleEndCall}
+                    style={{ padding: '12px 28px', fontSize: 14 }}
+                  >
+                    <span className="material-symbols-outlined filled" style={{ fontSize: 20 }}>call_end</span>
+                    End Call & View Report
+                  </button>
+                </div>
+              )}
             </div>
-          )}
 
-          {/* Post-Call Actions: Restart Call & Next Call */}
-          {callStatus === 'ended' && (
-            <div style={{ display: 'flex', gap: 16, alignItems: 'center', animation: 'fade-in-up 0.3s ease' }}>
-              <button
-                id="restart-call-btn"
-                className="btn-primary"
-                onClick={handleRestartCall}
-                style={{
-                  padding: '14px 28px',
-                  borderRadius: 'var(--radius)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  fontSize: 15,
-                  fontWeight: 600,
-                  background: 'var(--color-primary)',
-                  color: '#ffffff',
-                  border: 'none',
-                  cursor: 'pointer',
-                  boxShadow: '0 4px 14px rgba(0,82,204,0.3)'
-                }}
-              >
-                <span className="material-symbols-outlined" style={{ fontSize: 20 }}>replay</span>
-                Restart Call
-              </button>
-
-              <button
-                id="next-call-btn"
-                className="btn-outline"
-                onClick={handleNextCall}
-                style={{
-                  padding: '14px 28px',
-                  borderRadius: 'var(--radius)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  fontSize: 15,
-                  fontWeight: 600,
-                  background: 'var(--color-surface)',
-                  color: 'var(--color-on-surface)',
-                  border: '1.5px solid var(--color-outline-variant)',
-                  cursor: 'pointer'
-                }}
-              >
-                <span className="material-symbols-outlined" style={{ fontSize: 20 }}>add_call</span>
-                Next Patient / New Call
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Call Details Context Card */}
-        <div className="context-card" style={{ marginTop: 32, maxWidth: 500, width: '100%' }}>
-          <div className="context-card-title">Call Details & Status</div>
-          <div className="context-grid">
-            <div>
-              <div className="context-label">Call Status</div>
-              <div className="context-value" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span className={`status-dot ${dotClass}`} style={{ width: 8, height: 8 }} />
-                {callActive ? 'Live Call' : callStatus === 'ended' ? 'Completed' : 'Ready'}
+            {/* Context Card for Call Status */}
+            <div className="context-card" style={{ maxWidth: 480, width: '100%', marginTop: 'auto' }}>
+              <div className="context-card-title">Live Call Status</div>
+              <div className="context-grid">
+                <div>
+                  <div className="context-label">Call State</div>
+                  <div className="context-value" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span className={`status-dot ${dotClass}`} style={{ width: 8, height: 8 }} />
+                    {callActive ? 'In Progress' : 'Ready'}
+                  </div>
+                </div>
+                <div>
+                  <div className="context-label">Call Timer</div>
+                  <div className="context-value">{callActive ? formatDuration(callDuration) : '00:00'}</div>
+                </div>
+                <div>
+                  <div className="context-label">Exchanges</div>
+                  <div className="context-value">{messages.filter((m) => m.role === 'user').length} answered</div>
+                </div>
+                <div>
+                  <div className="context-label">Active Language</div>
+                  <div className="context-value" style={{ color: '#0052cc', fontWeight: 600 }}>
+                    {SUPPORTED_LANGUAGES.find((l) => l.code === activeLang)?.label || 'Auto-Detect'}
+                  </div>
+                </div>
               </div>
             </div>
-            <div>
-              <div className="context-label">Duration</div>
-              <div className="context-value">{callActive || callStatus === 'ended' ? formatDuration(callDuration) : '00:00'}</div>
-            </div>
-            <div>
-              <div className="context-label">Conversation Turns</div>
-              <div className="context-value">{messages.filter(m => m.role === 'user').length} exchanges</div>
-            </div>
-            <div>
-              <div className="context-label">Language Mode</div>
-              <div className="context-value" style={{ color: '#1a7a4a' }}>
-                {activeLang === 'hi-IN' ? 'Hindi (हिन्दी)' : 'English'}
-              </div>
-            </div>
-          </div>
-        </div>
+          </>
+        )}
 
         {/* Error Toast */}
         {errorMsg && (
