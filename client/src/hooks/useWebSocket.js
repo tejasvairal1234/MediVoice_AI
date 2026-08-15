@@ -3,11 +3,20 @@
 
 import { useRef, useCallback, useEffect } from 'react';
 
-// Use Render WebSocket URL in production, localhost in development
-const WS_URL = import.meta.env.VITE_WS_URL ||
-  (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
-    ? 'wss://medivoice-ai-1kpx.onrender.com'
-    : 'ws://localhost:3001');
+// Production Render backend WebSocket endpoint
+const RENDER_WS_URL = 'wss://medivoice-ai-1kpx.onrender.com';
+
+function getWebSocketURL() {
+  if (typeof window === 'undefined') return 'ws://localhost:3001';
+  const host = window.location.hostname;
+  if (host === 'localhost' || host === '127.0.0.1') {
+    return 'ws://localhost:3001';
+  }
+  // Production (Vercel / Render / Custom Domain)
+  return import.meta.env.VITE_WS_URL || RENDER_WS_URL;
+}
+
+const WS_URL = getWebSocketURL();
 
 /**
  * @param {Object} handlers - Event handlers
@@ -117,7 +126,7 @@ export function useWebSocket(handlers) {
       ws.onerror = (err) => {
         console.warn('[WS] Connection failed to', WS_URL);
         handlersRef.current.onError?.({
-          message: 'Connecting to MediVoice server on Render (it may take a few seconds to wake up from idle)...',
+          message: 'Connecting to MediVoice server on Render (please allow a moment if waking up)...',
           recoverable: true,
         });
       };
