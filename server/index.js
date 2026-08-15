@@ -1,5 +1,5 @@
-// server/index.js
-// MediVoice AI – Main server entry point
+﻿// server/index.js
+// MediVoice AI â€“ Main server entry point
 // Express REST API + WebSocket server for real-time call handling
 
 require('dotenv').config();
@@ -247,7 +247,7 @@ wss.on('connection', (ws) => {
         break;
       }
 
-      // ---- AUDIO END – process fallback audio turn ----
+      // ---- AUDIO END â€“ process fallback audio turn ----
       case 'audio_end': {
         isCollectingAudio = false;
         const session = getSession(sessionId);
@@ -336,7 +336,7 @@ wss.on('connection', (ws) => {
               severity: { painLevel: null, trend: 'unknown' },
               duration: 'Not collected',
               medicalHistory: 'Not collected',
-              aiFlags: ['Report generation error – manual review needed'],
+              aiFlags: ['Report generation error â€“ manual review needed'],
               recommendedAction: 'Please consult a healthcare provider.',
               callQuality: 'partial',
               language: session.detectedLanguage || 'en',
@@ -347,6 +347,10 @@ wss.on('connection', (ws) => {
         break;
       }
 
+      case 'ping':
+        sendJSON(ws, { type: 'pong' });
+        break;
+
       default:
         console.warn(`[WS] Unknown message type: ${msg.type}`);
     }
@@ -354,9 +358,10 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`\n🏥 MediVoice AI Server running on http://localhost:${PORT}`);
-  console.log(`📡 WebSocket server ready on ws://localhost:${PORT}`);
+  console.log(`\nðŸ¥ MediVoice AI Server running on http://localhost:${PORT}`);
+  console.log(`ðŸ“¡ WebSocket server ready on ws://localhost:${PORT}`);
   if (!process.env.GROQ_API_KEY && !process.env.OPENAI_API_KEY) {
-    console.warn('\n⚠️  WARNING: GROQ_API_KEY is not set! Check your server/.env file.\n');
+    console.warn('\nâš ï¸  WARNING: GROQ_API_KEY is not set! Check your server/.env file.\n');
   }
 });
+

@@ -1,12 +1,12 @@
-// src/hooks/useWebSocket.js
-// Custom hook for managing robust WebSocket connection with outgoing queue
+﻿// src/hooks/useWebSocket.js
+// Custom hook for managing robust WebSocket connection with outgoing queue, auto-reconnect & keepalive
 
 import { useRef, useCallback, useEffect } from 'react';
 
-// Use ws:// for dev, wss:// for production automatically
+// Use Render WebSocket URL in production, localhost in development
 const WS_URL = import.meta.env.VITE_WS_URL ||
-  (typeof window !== 'undefined' && window.location.protocol === 'https:'
-    ? `wss://${window.location.host}`
+  (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1'
+    ? 'wss://medivoice-ai-1kpx.onrender.com'
     : 'ws://localhost:3001');
 
 /**
@@ -16,6 +16,8 @@ export function useWebSocket(handlers) {
   const wsRef = useRef(null);
   const queueRef = useRef([]);
   const handlersRef = useRef(handlers);
+  const pingIntervalRef = useRef(null);
+  const reconnectTimeoutRef = useRef(null);
   handlersRef.current = handlers;
 
   const connect = useCallback(() => {
@@ -24,12 +26,24 @@ export function useWebSocket(handlers) {
     }
 
     try {
+      console.log('[WS] Connecting to:', WS_URL);
       const ws = new WebSocket(WS_URL);
       ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log('[WS] Connected to', WS_URL);
+        console.log('[WS] Connected successfully to', WS_URL);
+        
+        // Start keep-alive ping every 25s (prevents Render from closing idle connections)
+        if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            try {
+              ws.send(JSON.stringify({ type: 'ping' }));
+            } catch (_) {}
+          }
+        }, 25000);
+
         // Flush any queued messages
         while (queueRef.current.length > 0) {
           const item = queueRef.current.shift();
@@ -70,6 +84,8 @@ export function useWebSocket(handlers) {
           return;
         }
 
+        if (msg.type === 'pong') return; // Keep-alive response
+
         switch (msg.type) {
           case 'connected':         h.onConnected?.(msg); break;
           case 'call_started':      h.onCallStarted?.(msg); break;
@@ -88,13 +104,21 @@ export function useWebSocket(handlers) {
 
       ws.onclose = () => {
         console.log('[WS] Connection closed');
+        if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+        
+        // Auto-reconnect after 3 seconds if disconnected
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          console.log('[WS] Attempting auto-reconnect...');
+          connect();
+        }, 3000);
       };
 
-      ws.onerror = () => {
-        console.warn('[WS] Connection failed – make sure backend is running on port 3001');
+      ws.onerror = (err) => {
+        console.warn('[WS] Connection failed to', WS_URL);
         handlersRef.current.onError?.({
-          message: '⚠️ Cannot connect to server. Make sure the backend is running (cd server && node index.js)',
-          recoverable: false,
+          message: 'Connecting to MediVoice server on Render (it may take a few seconds to wake up from idle)...',
+          recoverable: true,
         });
       };
     } catch (err) {
@@ -123,6 +147,8 @@ export function useWebSocket(handlers) {
   }, []);
 
   const disconnect = useCallback(() => {
+    if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+    if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
     if (wsRef.current) {
       try { wsRef.current.close(); } catch (_) {}
     }
@@ -132,6 +158,8 @@ export function useWebSocket(handlers) {
   useEffect(() => {
     connect();
     return () => {
+      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (wsRef.current) {
         try { wsRef.current.close(); } catch (_) {}
       }
