@@ -36,6 +36,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+app.get('/', (req, res) => res.json({ status: 'ok', name: 'MediVoice AI Backend', ws: 'wss://medivoice-ai-1kpx.onrender.com' }));
+app.get('/health', (req, res) => res.status(200).send('OK'));
+
 // Health check
 app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'MediVoice AI' }));
 
