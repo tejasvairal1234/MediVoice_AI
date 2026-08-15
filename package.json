@@ -1,0 +1,10 @@
+﻿{
+  "name": "medivoice-ai-monorepo",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "npm run dev --prefix client",
+    "build": "cd client && npm install && npm run build",
+    "start": "node server/index.js"
+  }
+}
